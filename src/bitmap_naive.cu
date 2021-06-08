@@ -175,7 +175,7 @@ __global__ void intersectPerPair(const word* words, unsigned int numOfWords, uns
             for (unsigned int i = globalID; i < numOfWords; i += blockDim.x * gridDim.x) {
                 intersection += __popcll( words[a * numOfWords + i] & words[b * numOfWords + i] );
             }
-            atomicAdd(counts + pos(numOfSets, a, b), intersection);
+            atomicAdd(counts + triangular_idx(numOfSets, a, b), intersection);
         }
     }
 }

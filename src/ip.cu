@@ -136,7 +136,7 @@ __global__ void intersectPath(unsigned int numOfSets, unsigned int* sets, unsign
         for (unsigned int b = a + 1; b < numOfSets; b++) { // iterate every combination
             unsigned int* aSet = sets + offsets[a];
             unsigned int* bSet = sets + offsets[b];
-            unsigned int* diagonals = globalDiagonals + (2 * (gridDim.x + 1)) * pos(numOfSets, a, b);
+            unsigned int* diagonals = globalDiagonals + (2 * (gridDim.x + 1)) * triangular_idx(numOfSets, a, b);
 
             unsigned int aStart = diagonals[blockIdx.x];
             unsigned int aEnd = diagonals[blockIdx.x + 1];
@@ -160,7 +160,7 @@ __global__ void intersectPath(unsigned int numOfSets, unsigned int* sets, unsign
                                                          diag - mp,
                                                          bSize,
                                                          vt);
-            atomicAdd(counts + pos(numOfSets, a, b), intersection);
+            atomicAdd(counts + triangular_idx(numOfSets, a, b), intersection);
         }
     }
 }

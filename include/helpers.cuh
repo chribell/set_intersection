@@ -13,8 +13,12 @@ __forceinline__ __device__  int myMin(int a, int b)
     return (a > b) ? b : a;
 }
 
-__forceinline__ __device__ unsigned int pos(unsigned int n, unsigned int i, unsigned int j) {
+__forceinline__ __device__ unsigned int triangular_idx(unsigned int n, unsigned int i, unsigned int j) {
     return (n * (n - 1) / 2) - (n - i)*((n-i)-1)/2 + j - i - 1;
+}
+
+__forceinline__ __device__ unsigned int quadratic_idx(unsigned int n, unsigned int i, unsigned int j) {
+    return i * n + j;
 }
 
 __device__ inline unsigned int serialIntersect(unsigned int* a, unsigned int aBegin, unsigned int aEnd,
@@ -68,17 +72,21 @@ inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=t
 }
 
 // Adapted from https://github.com/ogreen/MergePathGPU
-__global__ void findDiagonals(unsigned int numOfSets, unsigned int *sets,
+template <bool selfJoin>
+__global__ void findDiagonals(tile A, tile B, unsigned int numOfSets, unsigned int *sets,
                               const unsigned int *sizes, unsigned int *offsets,
                               unsigned int *globalDiagonals, unsigned int* counts) {
 
     for (unsigned int a = 0; a < numOfSets - 1; a++) {
         for (unsigned int b = a + 1; b < numOfSets; b++) { // iterate every combination
+            unsigned int offset = selfJoin ?
+                    triangular_idx(numOfSets, a, b) :
+                    quadratic_idx(numOfSets, a - A.id * numOfSets, b - B.id * numOfSets);
             unsigned int aSize = sizes[a];
             unsigned int bSize = sizes[b];
             unsigned int *aSet = sets + offsets[a];
             unsigned int *bSet = sets + offsets[b];
-            unsigned int *diagonals = globalDiagonals + (2 * (gridDim.x + 1)) * pos(numOfSets, a, b);
+            unsigned int *diagonals = globalDiagonals + (2 * (gridDim.x + 1)) * offset;
 
             unsigned int combinedIndex =
                     (uint64_t) blockIdx.x * ((uint64_t) sizes[a] + (uint64_t) sizes[b]) / (uint64_t) gridDim.x;
@@ -111,7 +119,7 @@ __global__ void findDiagonals(unsigned int numOfSets, unsigned int *sets,
                 } else {
                     oneOrZero[threadIdx.x] = (aSet[currentX - 1] <= bSet[currentY]) ? 1 : 0;
                     if (aSet[currentX - 1] == bSet[currentY] && increment == 0) { // count augmentation
-                        atomicAdd(counts + pos(numOfSets, a, b),  1);
+                        atomicAdd(counts + offset,  1);
                         atomicAdd(&increment, 1);
                     }
                 }

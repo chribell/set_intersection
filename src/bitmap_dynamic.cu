@@ -246,7 +246,7 @@ __global__ void intersectPerPair(word* bitmaps, unsigned int numOfWords, unsigne
             for (unsigned int j = bStart + threadIdx.x; j < bEnd; j += blockDim.x) {
                 unsigned int element = elements[j]; // extract current element from set B
                 if (bitmaps[blockIdx.x * numOfWords + (element / WORD_BITS)] & (1ULL << (element % WORD_BITS))) { // check if bit is set
-                    atomicAdd(counts + pos(numOfSets, a, b), 1);
+                    atomicAdd(counts + triangular_idx(numOfSets, a, b), 1);
                 }
             }
 

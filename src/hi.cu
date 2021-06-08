@@ -269,7 +269,7 @@ __global__ void warpBasedHI(unsigned int numOfSets, const unsigned int* elements
             }
 
             if (count > 0) {
-                atomicAdd(counts + pos(numOfSets, a, b), count);
+                atomicAdd(counts + triangular_idx(numOfSets, a, b), count);
             }
 
             __syncwarp();
@@ -327,7 +327,7 @@ __global__ void blockBasedHI(unsigned int numOfSets, const unsigned int* element
             }
 
             if (count > 0) {
-                atomicAdd(counts + pos(numOfSets, a, b), count);
+                atomicAdd(counts + triangular_idx(numOfSets, a, b), count);
             }
             __syncthreads();
         }
@@ -348,7 +348,7 @@ __global__ void intersectPathHI(unsigned int numOfSets, const unsigned int* elem
 
     for (unsigned int a = 0; a < numOfSets - 1; a++) {
         for (unsigned int b = a + 1; b < numOfSets; b++) { // iterate every combination
-            unsigned int *diagonals = globalDiagonals + (2 * (gridDim.x + 1)) * pos(numOfSets, a, b);
+            unsigned int *diagonals = globalDiagonals + (2 * (gridDim.x + 1)) * triangular_idx(numOfSets, a, b);
 
             unsigned int aOffset = offsets[a];
             unsigned int bOffset = offsets[b];
@@ -386,7 +386,7 @@ __global__ void intersectPathHI(unsigned int numOfSets, const unsigned int* elem
             }
 
             if (count > 0) {
-                atomicAdd(counts + pos(numOfSets, a, b), count);
+                atomicAdd(counts + triangular_idx(numOfSets, a, b), count);
             }
             __syncthreads();
 

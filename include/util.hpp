@@ -6,6 +6,43 @@
 #include <string>
 #include <sstream>
 #include <iomanip>
+#include <vector>
+
+struct tile {
+    unsigned int id;
+    unsigned int start;
+    unsigned int end;
+    unsigned int length;
+
+    tile(unsigned int id, unsigned int start, unsigned int end) : id(id), start(start), end(end) {
+        length = end - start;
+    }
+};
+
+typedef std::pair<tile, tile> tile_pair;
+
+std::vector<tile_pair> findTilePairs(unsigned int cardinality, unsigned int partition)
+{
+    std::vector<tile_pair> pairs;
+    std::vector<tile> tiles;
+
+    unsigned int numOfTiles = std::ceil((double) cardinality / (double) partition);
+
+    for (unsigned int i = 0; i < numOfTiles; ++i) {
+        unsigned int start = i * partition;
+        unsigned int end = start + partition;
+        if (end >= cardinality) end -= (end - cardinality);
+        tiles.push_back(tile(i, start, end));
+    }
+
+    for (unsigned int i = 0; i < numOfTiles; ++i) {
+        for (unsigned int j = i; j < numOfTiles; ++j) {
+            pairs.push_back(std::make_pair(tiles[i], tiles[j]));
+        }
+    }
+
+    return pairs;
+}
 
 unsigned long long combination(unsigned int n, unsigned int k)
 {
