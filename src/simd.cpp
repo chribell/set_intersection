@@ -64,7 +64,7 @@ int main(int argc, char** argv) {
                 size_t intersize = inter(sets[a].data(), sets[a].size(), sets[b].data(), sets[b].size(), v.data());
                 v.resize(intersize);
                 v.shrink_to_fit();
-                counts[index(d->cardinality, a, b)] = v.size();
+                counts[triangular_index(d->cardinality, a, b)] = v.size();
             }
         }
         HostTimer::finish(setInter);

@@ -58,8 +58,12 @@ unsigned long long combination(unsigned int n, unsigned int k)
     return result;
 }
 
-unsigned int index(unsigned int n, unsigned i, unsigned j) {
+unsigned int triangular_index(unsigned int n, unsigned i, unsigned j) {
     return (n * (n - 1) / 2) - (n - i) * ((n - i) - 1) / 2 + j - i - 1;
+}
+
+unsigned int quadratic_index(unsigned int n, unsigned i, unsigned j) {
+    return i * n + j;
 }
 
 std::string formatBytes(size_t bytes)

@@ -100,16 +100,13 @@ int main(int argc, char** argv) {
         std::vector<tile_pair> runs = findTilePairs(d->cardinality, partition);
 
         size_t combinations;
-        if (d->cardinality >= partition) {
+        if (runs.size() == 1) {
             combinations = combination(d->cardinality, 2);
         } else {
             combinations = partition * partition;
         }
 
-        unsigned long long outputMemory = (runs.size() == 1 ?
-                                           combination(d->cardinality, 2) * sizeof(unsigned int) :
-                                           runs.size() * partition * sizeof(unsigned int)
-        );
+        unsigned long long outputMemory = runs.size() * combinations * sizeof(unsigned int);
 
         unsigned long long deviceMemory = (sizeof(unsigned int) * d->cardinality * 2)
                                           + (sizeof(unsigned int) * d->totalElements)
@@ -261,7 +258,11 @@ int main(int argc, char** argv) {
 
         if (!output.empty()) {
             fmt::print("Writing result to file {}\n", output);
-            writeResult(d->cardinality, counts, output);
+            if (runs.size() == 1) {
+                writeResult(d->cardinality, counts, output);
+            } else {
+                writeResult(runs, partition, counts, output);
+            }
             fmt::print("Finished\n");
         }
     } catch (const cxxopts::OptionException& e) {
@@ -286,7 +287,7 @@ __global__ void warpBasedOBS(tile A,
     unsigned int globalWarpId = (blockIdx.x * blockDim.x + threadIdx.x) / warpSize;
     unsigned int localWarpId = threadIdx.x / warpSize;
     unsigned int threadOffset = threadIdx.x % warpSize;
-    for (unsigned int a = globalWarpId + A.start; a < (selfJoin ? numOfSets - 1 : A.end); a += (blockDim.x * gridDim.x / warpSize)) {
+    for (unsigned int a = globalWarpId + A.start; a < A.end; a += (blockDim.x * gridDim.x / warpSize)) {
         unsigned int aSize = sizes[a];
         unsigned int aStart = offsets[a];
         unsigned int aEnd = offsets[a + 1];
@@ -295,7 +296,7 @@ __global__ void warpBasedOBS(tile A,
         cache[localWarpId * warpSize + threadOffset] = elements[aStart + (threadOffset * aSize / warpSize)];
         __syncthreads();
 
-        for (unsigned int b = (selfJoin ? a + 1 : B.start); b < (selfJoin ? numOfSets : B.end); b++) {
+        for (unsigned int b = (selfJoin ? a + 1 : B.start); b < B.end; b++) {
 
             unsigned int bStart = offsets[b];
             unsigned int bEnd = bStart + sizes[b];
@@ -344,7 +345,7 @@ __global__ void warpBasedOBS(tile A,
                 }
             }
             if (selfJoin) {
-                atomicAdd(counts + triangular_idx(numOfSets, a, b), count);
+                atomicAdd(counts + triangular_idx(numOfSets, a - A.id * numOfSets, b - B.id * numOfSets), count);
             } else {
                 atomicAdd(counts + quadratic_idx(numOfSets, a - A.id * numOfSets, b - B.id * numOfSets), count);
             }
@@ -365,7 +366,7 @@ __global__ void blockBasedOBS(tile A,
     extern unsigned int __shared__ s[];
     unsigned int* cache = s;
 
-    for (unsigned int a = blockIdx.x + A.start; a < (selfJoin ? numOfSets - 1 : A.end); a += gridDim.x) {
+    for (unsigned int a = blockIdx.x + A.start; a < A.end; a += gridDim.x) {
         unsigned int aSize = sizes[a];
         unsigned int aStart = offsets[a];
         unsigned int aEnd = offsets[a + 1];
@@ -374,7 +375,7 @@ __global__ void blockBasedOBS(tile A,
         cache[threadIdx.x] = elements[aStart + (threadIdx.x * aSize / blockDim.x)];
         __syncthreads();
 
-        for (unsigned int b = (selfJoin ? a + 1 : B.start); b < (selfJoin ? numOfSets : B.end); b++) {
+        for (unsigned int b = (selfJoin ? a + 1 : B.start); b < B.end; b++) {
 
             unsigned int bStart = offsets[b];
             unsigned int bEnd = bStart + sizes[b];
@@ -423,7 +424,7 @@ __global__ void blockBasedOBS(tile A,
                 }
             }
             if (selfJoin) {
-                atomicAdd(counts + triangular_idx(numOfSets, a, b), count);
+                atomicAdd(counts + triangular_idx(numOfSets, a - A.id * numOfSets, b - B.id * numOfSets), count);
             } else {
                 atomicAdd(counts + quadratic_idx(numOfSets, a - A.id * numOfSets, b - B.id * numOfSets), count);
             }
@@ -446,11 +447,11 @@ __global__ void intersectPathOBS(tile A,
     extern unsigned int __shared__ s[];
     unsigned int* cache = s;
 
-    for (unsigned int a = A.start; a < (selfJoin ? numOfSets : B.start); a++) {
-        for (unsigned int b = (selfJoin ? a + 1 : B.start); b < (selfJoin ? numOfSets : B.end); b++) {
+    for (unsigned int a = A.start; a < A.end; a++) {
+        for (unsigned int b = (selfJoin ? a + 1 : B.start); b < B.end; b++) {
             unsigned int offset =
                     (selfJoin ?
-                     triangular_idx(numOfSets, a, b) :
+                     triangular_idx(numOfSets, a - A.id * numOfSets, b - B.id * numOfSets) :
                      quadratic_idx(numOfSets, a - A.id * numOfSets, b - B.id * numOfSets));
 
             unsigned int *diagonals = globalDiagonals + (2 * (gridDim.x + 1)) * offset;

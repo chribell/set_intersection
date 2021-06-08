@@ -55,7 +55,7 @@ int main(int argc, char** argv) {
         Interval* setInter = hostTimer.add("std::set intersection");
         for (unsigned int a = 0; a < d->cardinality - 1; a++) {
             for (unsigned int b = a + 1; b < d->cardinality; b++) {
-                counts[index(d->cardinality, a, b)] = serialIntersect(sets[a], sets[b]);
+                counts[triangular_index(d->cardinality, a, b)] = serialIntersect(sets[a], sets[b]);
             }
         }
         HostTimer::finish(setInter);

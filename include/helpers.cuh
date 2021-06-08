@@ -77,10 +77,10 @@ __global__ void findDiagonals(tile A, tile B, unsigned int numOfSets, unsigned i
                               const unsigned int *sizes, unsigned int *offsets,
                               unsigned int *globalDiagonals, unsigned int* counts) {
 
-    for (unsigned int a = 0; a < numOfSets - 1; a++) {
-        for (unsigned int b = a + 1; b < numOfSets; b++) { // iterate every combination
+    for (unsigned int a = A.start; a < A.end; a++) {
+        for (unsigned int b = (selfJoin ? a + 1 : B.start); b < B.end; b++) { // iterate every combination
             unsigned int offset = selfJoin ?
-                    triangular_idx(numOfSets, a, b) :
+                    triangular_idx(numOfSets, a - A.id * numOfSets, b - B.id * numOfSets) :
                     quadratic_idx(numOfSets, a - A.id * numOfSets, b - B.id * numOfSets);
             unsigned int aSize = sizes[a];
             unsigned int bSize = sizes[b];

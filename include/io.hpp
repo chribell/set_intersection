@@ -93,8 +93,41 @@ void writeResult(unsigned int k, std::vector<unsigned int> counts, std::string& 
 
     for (unsigned int a = 0; a < k; a++) {
         for (unsigned int b = a + 1; b < k; b++) {
-            fmt::print(file, "({},{}): {}\n", a + 1, b + 1, counts[index(k, a, b)]);
+            fmt::print(file, "({},{}): {}\n", a + 1, b + 1, counts[triangular_index(k, a, b)]);
         }
+    }
+
+    file.close();
+}
+
+void writeResult(std::vector<tile_pair>& runs, unsigned int partition,
+                 std::vector<unsigned int>& counts, std::string& output) {
+    std::ofstream file;
+    file.open(output.c_str());
+
+    unsigned int iter = 0;
+
+    for (auto& run : runs) {
+        tile& A = run.first;
+        tile& B = run.second;
+        bool selfJoin = (A.id == B.id);
+        unsigned int partitionOffset = iter * partition * partition;
+
+
+        for (unsigned int i = A.start; i < A.end; ++i) {
+            for (unsigned int j = (selfJoin ? i + 1 : B.start); j < B.end; ++j) {
+                unsigned long pairOffset;
+                if (selfJoin) {
+                    pairOffset = triangular_index(partition, i - A.id * partition, j - B.id * partition);
+                } else {
+                    pairOffset = quadratic_index(partition, i - A.id * partition, j - B.id * partition);
+                }
+
+                fmt::print(file, "({},{}): {}\n", i + 1, j + 1,
+                           (&counts[0] + partitionOffset)[pairOffset]);
+            }
+        }
+        iter++;
     }
 
     file.close();

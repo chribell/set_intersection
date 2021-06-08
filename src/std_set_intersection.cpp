@@ -57,7 +57,7 @@ int main(int argc, char** argv) {
                 std::vector<unsigned int> v(std::min(sets[a].size(), sets[b].size()));
                 it = std::set_intersection(sets[a].begin(), sets[a].end(), sets[b].begin(), sets[b].end(), v.begin());
                 v.resize(it - v.begin());
-                counts[index(d->cardinality, a, b)] = v.size();
+                counts[triangular_index(d->cardinality, a, b)] = v.size();
             }
         }
         HostTimer::finish(setInter);

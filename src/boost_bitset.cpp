@@ -63,7 +63,7 @@ int main(int argc, char** argv) {
                 for (unsigned int i = 0; i < sets[b].size(); ++i) {
                     if (bitset[sets[b][i]]) count++;
                 }
-                counts[index(d->cardinality, a, b)] = count;
+                counts[triangular_index(d->cardinality, a, b)] = count;
             }
         }
         HostTimer::finish(setInter);
