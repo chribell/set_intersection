@@ -13,14 +13,19 @@ __global__ void constructBitmap(word* bitmap, const unsigned int* elements, unsi
 __global__ void singleInstanceIntersect(const word* bitmap, const unsigned int* elements,
                                         unsigned int n, unsigned int* counts);
 
-__global__ void intersectPerPair(word* bitmaps, unsigned int numOfWords, unsigned int numOfSets,
+template <bool selfJoin>
+__global__ void intersectPerPair(tile A, tile B, word* bitmaps, unsigned int numOfWords, unsigned int numOfSets,
         const unsigned int* elements, const unsigned int* sizes, const unsigned int* offsets, unsigned int* counts);
 
 
 int main(int argc, char** argv) {
     try {
+        fmt::print(
+                "┌{0:─^{1}}┐\n"
+                "│{2: ^{1}}|\n"
+                "└{0:─^{1}}┘\n", "", 51, "Bitmap-dynamic GPU set intersection"
+        );
 
-        fmt::print("{}\n", "Bitmap-based dynamic GPU set intersection");
 
         int multiprocessorCount;
         int maxThreadsPerBlock;
@@ -34,6 +39,7 @@ int main(int argc, char** argv) {
         unsigned int blocks = multiprocessorCount * 16;
         unsigned int blockSize = maxThreadsPerBlock / 2;
         bool warpBased = true;
+        unsigned int partition = 10000;
 
         cxxopts::Options options(argv[0], "Help");
 
@@ -43,6 +49,7 @@ int main(int argc, char** argv) {
                 ("blocks", "Number of blocks (default: " + std::to_string(blocks) + ")", cxxopts::value<unsigned int>(blocks))
                 ("threads", "Threads per block (default: " + std::to_string(blockSize) + ")", cxxopts::value<unsigned int>(blockSize))
                 ("warp", "Launch warp based kernel (default: false, runs block based)", cxxopts::value<bool>(warpBased))
+                ("partition", "Number of sets to be processed per GPU invocation", cxxopts::value<unsigned int>(partition))
                 ("help", "Print help");
 
         auto result = options.parse(argc, argv);
@@ -61,9 +68,6 @@ int main(int argc, char** argv) {
 
         bool singleInstance = d->cardinality == 2;
 
-        fmt::print("|A| = {}\n", d->sizes[0]);
-        fmt::print("|B| = {}\n", d->sizes[1]);
-
         fmt::print(
                 "┌{0:─^{1}}┐\n"
                 "│{3: ^{2}}|{4: ^{2}}│\n"
@@ -75,6 +79,17 @@ int main(int argc, char** argv) {
                 "Total elements", d->totalElements, ""
         );
 
+        std::vector<tile_pair> runs = findTilePairs(d->cardinality, partition);
+
+        size_t combinations;
+        if (runs.size() == 1) {
+            combinations = combination(d->cardinality, 2);
+        } else {
+            combinations = partition * partition;
+        }
+
+        unsigned long long outputMemory = runs.size() * combinations * sizeof(unsigned int);
+
         unsigned int bitmapWords = BITMAP_NWORDS(d->universe);
         size_t bitmapMemory = 0;
 
@@ -84,19 +99,41 @@ int main(int argc, char** argv) {
             bitmapMemory = bitmapWords * sizeof(word) * blocks;
         }
 
+        unsigned long long deviceMemory = (sizeof(unsigned int) * d->cardinality * 2)
+                                          + (sizeof(unsigned int) * d->totalElements)
+                                          + (sizeof(unsigned int) * combinations)
+                                          + bitmapMemory;
+
         fmt::print(
                 "┌{0:─^{1}}┐\n"
                 "│{3: ^{2}}|{4: ^{2}}│\n"
                 "│{5: ^{2}}|{6: ^{2}}│\n"
                 "│{7: ^{2}}|{8: ^{2}}│\n"
-                "└{9:─^{1}}┘\n", "Bitmap Info", 51, 25,
+                "│{9: ^{2}}|{10: ^{2}}│\n"
+                "│{11: ^{2}}|{12: ^{2}}│\n"
+                "│{13: ^{2}}|{14: ^{2}}│\n"
+                "│{15: ^{2}}|{16: ^{2}}│\n"
+                "│{17: ^{2}}|{18: ^{2}}│\n"
+                "│{19: ^{2}}|{20: ^{2}}│\n"
+                "│{21: ^{2}}|{22: ^{2}}│\n"
+                "└{23:─^{1}}┘\n", "Launch Info", 51, 25,
                 "Word size", WORD_BITS,
                 "Bitmap words", bitmapWords,
-                "Required Memory (MB)", bitmapMemory / 1000000, ""
+                "Blocks", blocks,
+                "Block Size", blockSize,
+                "Warps per Block", blockSize / 32,
+                "Level", (warpBased ? "Warp" : "Block"),
+                "Partition", partition,
+                "GPU invocations", runs.size(),
+                "Required Memory (Output)", formatBytes(outputMemory),
+                "Required Memory (GPU)", formatBytes(deviceMemory),
+                ""
         );
 
         cudaDeviceGetAttribute(&multiprocessorCount, cudaDevAttrMultiProcessorCount, 0);
         cudaDeviceGetAttribute(&maxThreadsPerBlock, cudaDevAttrMaxThreadsPerBlock, 0);
+
+        std::vector<unsigned int> counts(runs.size() == 1 ? combinations : runs.size() * combinations);
 
         DeviceTimer deviceTimer;
 
@@ -117,8 +154,8 @@ int main(int argc, char** argv) {
             errorCheck(cudaMalloc((void**)&deviceCounts, sizeof(unsigned int) * blocks))
             errorCheck(cudaMemset(deviceCounts, 0, sizeof(unsigned int) * blocks))
         } else {
-            errorCheck(cudaMalloc((void**)&deviceCounts, sizeof(unsigned int) * combination(d->cardinality, 2)))
-            errorCheck(cudaMemset(deviceCounts, 0, sizeof(unsigned int) * combination(d->cardinality, 2)))
+            errorCheck(cudaMalloc((void**)&deviceCounts, sizeof(unsigned int) * combinations))
+            errorCheck(cudaMemset(deviceCounts, 0, sizeof(unsigned int) * combinations))
         }
         DeviceTimer::finish(devMemAlloc);
 
@@ -132,33 +169,44 @@ int main(int argc, char** argv) {
             EventPair* bitmapGen = deviceTimer.add("Generate bitmap");
             constructBitmap<<<blocks, blockSize>>>(deviceBitmaps, deviceElements, d->sizes[0]);
             DeviceTimer::finish(bitmapGen);
+            EventPair *interBitmap = deviceTimer.add("Bitmap intersection");
+            singleInstanceIntersect<<<blocks, blockSize>>>
+                    (deviceBitmaps, deviceElements + d->sizes[0], d->sizes[1], deviceCounts);
+            DeviceTimer::finish(interBitmap);
+            counts[0] = thrust::reduce(thrust::device, deviceCounts, deviceCounts + blocks);
         } else {
             EventPair* setOffsets = deviceTimer.add("Compute set offsets");
             thrust::exclusive_scan(thrust::device, deviceOffsets, deviceOffsets + d->cardinality, deviceOffsets,
                                    0); // in-place scan
             DeviceTimer::finish(setOffsets);
-        }
 
-        EventPair *interBitmap = deviceTimer.add("Bitmap intersection");
-        if (singleInstance) {
-            singleInstanceIntersect<<<blocks, blockSize>>>
-                    (deviceBitmaps, deviceElements + d->sizes[0], d->sizes[1], deviceCounts);
-        } else {
-            intersectPerPair<<<blocks, blockSize>>>
-                    (deviceBitmaps, bitmapWords, d->cardinality, deviceElements, deviceSizes, deviceOffsets, deviceCounts);
-        }
+            unsigned int iter = 0;
+            for (auto& run : runs) {
+                tile& A = run.first;
+                tile& B = run.second;
+                bool selfJoin = A.id == B.id;
+                unsigned int numOfSets = selfJoin && runs.size() == 1 ? d->cardinality : partition;
 
-        DeviceTimer::finish(interBitmap);
+                EventPair* interBitmap = deviceTimer.add("Bitmap intersection");
+                if (selfJoin) {
+                    intersectPerPair<true><<<blocks, blockSize>>>
+                            (A, B, deviceBitmaps, bitmapWords, numOfSets, deviceElements, deviceSizes, deviceOffsets, deviceCounts);
+                } else {
+                    intersectPerPair<false><<<blocks, blockSize>>>
+                            (A, B, deviceBitmaps, bitmapWords, numOfSets, deviceElements, deviceSizes, deviceOffsets, deviceCounts);
+                }
+                DeviceTimer::finish(interBitmap);
 
-        std::vector<unsigned int> counts(combination(d->cardinality, 2));
+                EventPair* countTransfer = deviceTimer.add("Transfer result");
+                errorCheck(cudaMemcpy(&counts[0] + (iter * combinations), deviceCounts, sizeof(unsigned int) * combinations,
+                                      cudaMemcpyDeviceToHost))
+                DeviceTimer::finish(countTransfer);
 
-        if (singleInstance) {
-            counts[0] = thrust::reduce(thrust::device, deviceCounts, deviceCounts + blocks);
-        } else {
-            EventPair *countTransfer = deviceTimer.add("Transfer result");
-            errorCheck(cudaMemcpy(&counts[0], deviceCounts, sizeof(unsigned int) * combination(d->cardinality, 2),
-                                  cudaMemcpyDeviceToHost));
-            DeviceTimer::finish(countTransfer);
+                EventPair* clearMemory = deviceTimer.add("Clear memory");
+                errorCheck(cudaMemset(deviceCounts, 0, sizeof(unsigned int) * combinations))
+                DeviceTimer::finish(clearMemory);
+                iter++;
+            }
         }
 
         EventPair *freeDevMem = deviceTimer.add("Free device memory");
@@ -175,7 +223,11 @@ int main(int argc, char** argv) {
 
         if (!output.empty()) {
             fmt::print("Writing result to file {}\n", output);
-            writeResult(d->cardinality, counts, output);
+            if (runs.size() == 1) {
+                writeResult(d->cardinality, counts, output);
+            } else {
+                writeResult(runs, partition, counts, output);
+            }
             fmt::print("Finished\n");
         }
     } catch (const cxxopts::OptionException& e) {
@@ -224,11 +276,11 @@ __global__ void singleInstanceIntersect(const word* bitmap, const unsigned int* 
 }
 
 
-
-__global__ void intersectPerPair(word* bitmaps, unsigned int numOfWords, unsigned int numOfSets,
+template <bool selfJoin>
+__global__ void intersectPerPair(tile A, tile B, word* bitmaps, unsigned int numOfWords, unsigned int numOfSets,
                                  const unsigned int* elements, const unsigned int* sizes, const unsigned int* offsets, unsigned int* counts)
 {
-    for (unsigned int a = blockIdx.x; a < numOfSets - 1; a += gridDim.x) {
+    for (unsigned int a = blockIdx.x + A.start; a < A.end; a += gridDim.x) {
         unsigned int aStart = offsets[a];
         unsigned int aEnd = offsets[a + 1];
 
@@ -240,13 +292,15 @@ __global__ void intersectPerPair(word* bitmaps, unsigned int numOfWords, unsigne
         __syncthreads();
 
         // iterate combinations to calculate the intersections
-        for (unsigned int b = a + 1; b < numOfSets; b++) {
+        for (unsigned int b = (selfJoin ? a + 1 : B.start); b < B.end; b++) {
             unsigned int bStart = offsets[b];
             unsigned int bEnd = bStart + sizes[b];
             for (unsigned int j = bStart + threadIdx.x; j < bEnd; j += blockDim.x) {
                 unsigned int element = elements[j]; // extract current element from set B
                 if (bitmaps[blockIdx.x * numOfWords + (element / WORD_BITS)] & (1ULL << (element % WORD_BITS))) { // check if bit is set
-                    atomicAdd(counts + triangular_idx(numOfSets, a, b), 1);
+                    atomicAdd(counts + (selfJoin ?
+                        triangular_idx(numOfSets, a - A.id * numOfSets, b - B.id * numOfSets) :
+                        quadratic_idx(numOfSets, a - A.id * numOfSets, b - B.id * numOfSets)) , 1);
                 }
             }
 
