@@ -31,20 +31,29 @@ int linearSearch(unsigned int neighbor, const unsigned int* partition1, const un
     return 0;
 }
 
-__global__ void warpBasedHI(unsigned int numOfSets, const unsigned int* elements, const unsigned int* sizes,
+template <bool selfJoin>
+__global__ void warpBasedHI(tile A, tile B, unsigned int numOfSets, const unsigned int* elements, const unsigned int* sizes,
         const unsigned int* offsets, unsigned int* counts, unsigned int* bins, unsigned int numOfBuckets, unsigned int bucketSize);
 
-template <bool split>
-__global__ void blockBasedHI(unsigned int numOfSets, const unsigned int* elements, const unsigned int* sizes,
+template <bool selfJoin, bool split>
+__global__ void blockBasedHI(tile A, tile B, unsigned int numOfSets, const unsigned int* elements, const unsigned int* sizes,
         const unsigned int* offsets, unsigned int* counts, unsigned int* bins, unsigned int numOfBuckets, unsigned int bucketSize);
 
-__global__ void intersectPathHI(unsigned int numOfSets, const unsigned int* elements, const unsigned int* offsets,
+template <bool selfJoin>
+__global__ void intersectPathHI(tile A, tile B, unsigned int numOfSets, const unsigned int* elements, const unsigned int* offsets,
         unsigned int* counts, unsigned int* bins, unsigned int numOfBuckets,
         unsigned int bucketSize, unsigned int* globalDiagonals);
 
 int main(int argc, char** argv) {
     try {
-        fmt::print("{}\n", "Hash-based GPU set intersection");
+        fmt::print(
+                "┌{0:─^{1}}┐\n"
+                "│{2: ^{1}}|\n"
+                "└{0:─^{1}}┘\n", "", 51, "Hash-based GPU set intersection"
+        );
+
+
+        fmt::print("{}\n", "");
 
         int multiprocessorCount;
         int maxThreadsPerBlock;
@@ -60,7 +69,8 @@ int main(int argc, char** argv) {
         unsigned int buckets = 512;
         unsigned int bucketSize = 1000;
         bool warpBased = false;
-        bool partition = false;
+        bool path = false;
+        unsigned int partition = 10000;
 
         cxxopts::Options options(argv[0], "Help");
 
@@ -72,7 +82,8 @@ int main(int argc, char** argv) {
                 ("buckets", "Number of buckets (default: 512)", cxxopts::value<unsigned int>(buckets))
                 ("bucket-size", "Size of each bucket (default: 1000)", cxxopts::value<unsigned int>(bucketSize))
                 ("warp", "Launch warp based kernel (default: false, runs block based)", cxxopts::value<bool>(warpBased))
-                ("path", "Adapt intersect path 1st level partitioning to distribute workload across thread blocks", cxxopts::value<bool>(partition))
+                ("partition", "Number of sets to be processed per GPU invocation", cxxopts::value<unsigned int>(partition))
+                ("path", "Adapt intersect path 1st level partitioning to distribute workload across thread blocks", cxxopts::value<bool>(path))
                 ("help", "Print help");
 
         auto result = options.parse(argc, argv);
@@ -104,6 +115,22 @@ int main(int argc, char** argv) {
         unsigned int warpsPerBlock = blockSize / 32; // 32 is the warp size
         unsigned int binsMemory = blocks * warpsPerBlock * buckets * bucketSize * sizeof(unsigned int);
 
+        std::vector<tile_pair> runs = findTilePairs(d->cardinality, partition);
+
+        size_t combinations;
+        if (runs.size() == 1) {
+            combinations = combination(d->cardinality, 2);
+        } else {
+            combinations = partition * partition;
+        }
+
+        unsigned long long outputMemory = runs.size() * combinations * sizeof(unsigned int);
+
+        unsigned long long deviceMemory = (sizeof(unsigned int) * d->cardinality * 2)
+                                          + (sizeof(unsigned int) * d->totalElements)
+                                          + (sizeof(unsigned int) * combinations)
+                                          + binsMemory;
+
         fmt::print(
                 "┌{0:─^{1}}┐\n"
                 "│{3: ^{2}}|{4: ^{2}}│\n"
@@ -113,15 +140,24 @@ int main(int argc, char** argv) {
                 "│{11: ^{2}}|{12: ^{2}}│\n"
                 "│{13: ^{2}}|{14: ^{2}}│\n"
                 "│{15: ^{2}}|{16: ^{2}}│\n"
-                "└{17:─^{1}}┘\n", "Launch info", 51, 25,
+                "│{17: ^{2}}|{18: ^{2}}│\n"
+                "│{19: ^{2}}|{20: ^{2}}│\n"
+                "│{21: ^{2}}|{22: ^{2}}│\n"
+                "└{23:─^{1}}┘\n", "Launch info", 51, 25,
                 "Blocks", blocks,
                 "Block Size", blockSize,
                 "Warps per Block", warpsPerBlock,
+                "Level", (warpBased ? "Warp" : "Block"),
                 "Buckets", buckets,
                 "Bucket Size", bucketSize,
-                "Buckets Memory (MB)", ((double) (binsMemory) / 1000000.0),
-                "Level", (warpBased ? "Warp" : "Block"), ""
+                "Partition", partition,
+                "GPU invocations", runs.size(),
+                "Required memory (Output)", formatBytes(outputMemory),
+                "Required memory (GPU)", formatBytes(deviceMemory),
+                ""
         );
+
+        std::vector<unsigned int> counts(runs.size() == 1 ? combinations : runs.size() * combinations);
 
         cudaDeviceReset();
 
@@ -139,13 +175,13 @@ int main(int argc, char** argv) {
         errorCheck(cudaMalloc((void**)&deviceOffsets, sizeof(unsigned int) * d->cardinality))
         errorCheck(cudaMalloc((void**)&deviceSizes, sizeof(unsigned int) * d->cardinality))
         errorCheck(cudaMalloc((void**)&deviceElements, sizeof(unsigned int) * d->totalElements))
-        errorCheck(cudaMalloc((void**)&deviceCounts, sizeof(unsigned int) * combination(d->cardinality, 2)))
-        errorCheck(cudaMemset(deviceCounts, 0, sizeof(unsigned int) * combination(d->cardinality, 2)))
+        errorCheck(cudaMalloc((void**)&deviceCounts, sizeof(unsigned int) * combinations))
+        errorCheck(cudaMemset(deviceCounts, 0, sizeof(unsigned int) * combinations))
         errorCheck(cudaMalloc((void**)&deviceBins, binsMemory))
         errorCheck(cudaMemset(deviceBins, 0, binsMemory))
-        if (partition) {
-            errorCheck(cudaMalloc((void**)&deviceDiagonals, sizeof(unsigned int) * 2 * (blocks + 1) * (combination(d->cardinality, 2))))
-            errorCheck(cudaMemset(deviceDiagonals, 0, sizeof(unsigned int) * 2 * (blocks + 1) * (combination(d->cardinality, 2))))
+        if (path) {
+            errorCheck(cudaMalloc((void**)&deviceDiagonals, sizeof(unsigned int) * 2 * (blocks + 1) * combinations))
+            errorCheck(cudaMemset(deviceDiagonals, 0, sizeof(unsigned int) * 2 * (blocks + 1) * combinations))
         }
         DeviceTimer::finish(devMemAlloc);
 
@@ -159,33 +195,70 @@ int main(int argc, char** argv) {
         thrust::exclusive_scan(thrust::device, deviceOffsets, deviceOffsets + d->cardinality, deviceOffsets, 0); // in-place scan
         DeviceTimer::finish(setOffsets);
 
-        if (partition) {
-            EventPair *findDiags = deviceTimer.add("Find diagonals");
-            findDiagonals<<<blocks, 32>>>(d->cardinality, deviceElements, deviceSizes, deviceOffsets, deviceDiagonals, deviceCounts);
-            DeviceTimer::finish(findDiags);
-        }
+        unsigned int iter = 0;
+        for (auto& run : runs) {
+            tile& A = run.first;
+            tile& B = run.second;
+            bool selfJoin = A.id == B.id;
+            unsigned int numOfSets = selfJoin && runs.size() == 1 ? d->cardinality : partition;
 
-        EventPair* hashInter = deviceTimer.add("Hash intersection");
-        if (partition) {
-            intersectPathHI<<<blocks, blockSize, sizeof(unsigned int) * buckets>>>
-                (d->cardinality, deviceElements, deviceOffsets, deviceCounts, deviceBins, buckets, bucketSize, deviceDiagonals);
-        } else {
-            if (warpBased) {
-                warpBasedHI<<<blocks, blockSize, sizeof(unsigned int) * buckets * warpsPerBlock>>>(d->cardinality, deviceElements, deviceSizes,
-                                                                                                                deviceOffsets, deviceCounts, deviceBins, buckets, bucketSize);
-            } else {
-                blockBasedHI<false><<<blocks, blockSize, sizeof(unsigned int) * buckets>>>(d->cardinality, deviceElements, deviceSizes,
-                                                                                                        deviceOffsets, deviceCounts, deviceBins, buckets, bucketSize);
+            if (path) {
+                EventPair *findDiags = deviceTimer.add("Find diagonals");
+                if (selfJoin) {
+                    findDiagonals<true><<<blocks, 32>>>(A, B, numOfSets, deviceElements, deviceSizes, deviceOffsets,
+                                                        deviceDiagonals, deviceCounts);
+                } else {
+                    findDiagonals<false><<<blocks, 32>>>(A, B, numOfSets, deviceElements, deviceSizes, deviceOffsets,
+                                                         deviceDiagonals, deviceCounts);
+                }
+                DeviceTimer::finish(findDiags);
             }
+
+            EventPair* hashInter = deviceTimer.add("Hash intersection");
+            if (path) {
+                if (selfJoin) {
+                    intersectPathHI<true><<<blocks, blockSize, sizeof(unsigned int) * buckets>>>
+                            (A, B, numOfSets, deviceElements, deviceOffsets, deviceCounts, deviceBins, buckets, bucketSize, deviceDiagonals);
+                } else {
+                    intersectPathHI<false><<<blocks, blockSize, sizeof(unsigned int) * buckets>>>
+                            (A, B, numOfSets, deviceElements, deviceOffsets, deviceCounts, deviceBins, buckets, bucketSize, deviceDiagonals);
+                }
+            } else {
+                if (warpBased) {
+                    if (selfJoin) {
+                        warpBasedHI<true><<<blocks, blockSize, sizeof(unsigned int) * buckets * warpsPerBlock>>>
+                            (A, B, numOfSets, deviceElements, deviceSizes, deviceOffsets, deviceCounts, deviceBins, buckets, bucketSize);
+                    } else {
+                        warpBasedHI<false><<<blocks, blockSize, sizeof(unsigned int) * buckets * warpsPerBlock>>>
+                            (A, B, numOfSets, deviceElements, deviceSizes, deviceOffsets, deviceCounts, deviceBins, buckets, bucketSize);
+                    }
+                } else {
+                    if (selfJoin) {
+                        blockBasedHI<true, false><<<blocks, blockSize, sizeof(unsigned int) * buckets>>>(A, B, numOfSets, deviceElements, deviceSizes,
+                                                                                                   deviceOffsets, deviceCounts, deviceBins, buckets, bucketSize);
+                    } else {
+                        blockBasedHI<false, false><<<blocks, blockSize, sizeof(unsigned int) * buckets>>>(A, B, numOfSets, deviceElements, deviceSizes,
+                                                                                                   deviceOffsets, deviceCounts, deviceBins, buckets, bucketSize);
+                    }
+                }
+            }
+            DeviceTimer::finish(hashInter);
+
+            EventPair *countTransfer = deviceTimer.add("Transfer result");
+            errorCheck(cudaMemcpy(&counts[0] + (iter * combinations), deviceCounts, sizeof(unsigned int) * combinations,
+                                  cudaMemcpyDeviceToHost))
+            DeviceTimer::finish(countTransfer);
+
+            EventPair* clearMemory = deviceTimer.add("Clear memory");
+            if (path) {
+                errorCheck(cudaMemset(deviceDiagonals, 0, sizeof(unsigned int) * 2 * (blocks + 1) * combinations))
+            }
+            errorCheck(cudaMemset(deviceCounts, 0, sizeof(unsigned int) * combinations))
+            errorCheck(cudaMemset(deviceBins, 0, binsMemory))
+            DeviceTimer::finish(clearMemory);
+
+            iter++;
         }
-        DeviceTimer::finish(hashInter);
-
-
-        std::vector<unsigned int> counts(combination(d->cardinality, 2));
-
-        EventPair* countTransfer = deviceTimer.add("Transfer result");
-        errorCheck(cudaMemcpy(&counts[0], deviceCounts, sizeof(unsigned int) * combination(d->cardinality, 2), cudaMemcpyDeviceToHost))
-        DeviceTimer::finish(countTransfer);
 
         EventPair* freeDevMem = deviceTimer.add("Free device memory");
         errorCheck(cudaFree(deviceBins))
@@ -193,7 +266,7 @@ int main(int argc, char** argv) {
         errorCheck(cudaFree(deviceSizes))
         errorCheck(cudaFree(deviceElements))
         errorCheck(cudaFree(deviceCounts))
-        if (partition) {
+        if (path) {
             errorCheck(cudaFree(deviceDiagonals))
         }
         DeviceTimer::finish(freeDevMem);
@@ -204,7 +277,11 @@ int main(int argc, char** argv) {
 
         if (!output.empty()) {
             fmt::print("Writing result to file {}\n", output);
-            writeResult(d->cardinality, counts, output);
+            if (runs.size() == 1) {
+                writeResult(d->cardinality, counts, output);
+            } else {
+                writeResult(runs, partition, counts, output);
+            }
             fmt::print("Finished\n");
         }
 
@@ -215,7 +292,8 @@ int main(int argc, char** argv) {
     return 0;
 }
 
-__global__ void warpBasedHI(unsigned int numOfSets, const unsigned int* elements, const unsigned int* sizes,
+template <bool selfJoin>
+__global__ void warpBasedHI(tile A, tile B, unsigned int numOfSets, const unsigned int* elements, const unsigned int* sizes,
                             const unsigned int* offsets, unsigned int* counts, unsigned int* bins, unsigned int numOfBuckets, unsigned int bucketSize) {
     extern unsigned int __shared__ s[]; // [256*4]
     unsigned int* binCounts = s;
@@ -231,7 +309,7 @@ __global__ void warpBasedHI(unsigned int numOfSets, const unsigned int* elements
 
     // Sets must be sorted in ascending order, thus set a will always be smaller than set b in order to minimize collisions
     // and avoid redundant work
-    for (unsigned int a = globalWarpId; a < numOfSets - 1; a += gridDim.x * warpsPerBlock) {
+    for (unsigned int a = globalWarpId + A.start; a < A.end; a += gridDim.x * warpsPerBlock) {
         unsigned int aStart = offsets[a];
         unsigned int aEnd = offsets[a + 1];
 
@@ -254,7 +332,7 @@ __global__ void warpBasedHI(unsigned int numOfSets, const unsigned int* elements
 
         __syncwarp();
 
-        for (unsigned int b = a + 1; b < numOfSets; b++) {
+        for (unsigned int b = (selfJoin ? a + 1 : B.start); b < B.end; b++) {
 
             unsigned int bStart = offsets[b];
             unsigned int bEnd = bStart + sizes[b];
@@ -269,7 +347,9 @@ __global__ void warpBasedHI(unsigned int numOfSets, const unsigned int* elements
             }
 
             if (count > 0) {
-                atomicAdd(counts + triangular_idx(numOfSets, a, b), count);
+                atomicAdd(counts + (selfJoin ?
+                                    triangular_idx(numOfSets, a - A.id * numOfSets, b - B.id * numOfSets) :
+                                    quadratic_idx(numOfSets, a - A.id * numOfSets, b - B.id * numOfSets)) , count);
             }
 
             __syncwarp();
@@ -278,8 +358,8 @@ __global__ void warpBasedHI(unsigned int numOfSets, const unsigned int* elements
     }
 }
 
-template <bool split>
-__global__ void blockBasedHI(unsigned int numOfSets, const unsigned int* elements, const unsigned int* sizes,
+template <bool selfJoin, bool split>
+__global__ void blockBasedHI(tile A, tile B, unsigned int numOfSets, const unsigned int* elements, const unsigned int* sizes,
                              const unsigned int* offsets, unsigned int* counts, unsigned int* bins, unsigned int numOfBuckets, unsigned int bucketSize)
 {
     extern unsigned int __shared__ s[];
@@ -290,7 +370,7 @@ __global__ void blockBasedHI(unsigned int numOfSets, const unsigned int* element
 
     // Sets must be sorted in ascending order, thus set a will always be smaller than set b in order to minimize collisions
     // and avoid redundant work
-    for (unsigned int a = (split ? 0 : blockIdx.x); a < numOfSets - 1; a += (split ? 1 : gridDim.x)) {
+    for (unsigned int a = (split ? 0 : blockIdx.x) + A.start; a < A.end; a += (split ? 1 : gridDim.x)) {
 
         unsigned int aStart = offsets[a];
         unsigned int aEnd = offsets[a + 1];
@@ -312,7 +392,7 @@ __global__ void blockBasedHI(unsigned int numOfSets, const unsigned int* element
 
         __syncthreads();
 
-        for (unsigned int b = (split ? a + blockIdx.x : a + 1); b < numOfSets; b += (split ? gridDim.x : 1)) {
+        for (unsigned int b = (split ? blockIdx.x : 1) + (selfJoin ? a : B.start); b < B.end; b += (split ? gridDim.x : 1)) {
 
             unsigned int bStart = offsets[b];
             unsigned int bEnd = bStart + sizes[b];
@@ -327,7 +407,9 @@ __global__ void blockBasedHI(unsigned int numOfSets, const unsigned int* element
             }
 
             if (count > 0) {
-                atomicAdd(counts + triangular_idx(numOfSets, a, b), count);
+                atomicAdd(counts + (selfJoin ?
+                                    triangular_idx(numOfSets, a - A.id * numOfSets, b - B.id * numOfSets) :
+                                    quadratic_idx(numOfSets, a - A.id * numOfSets, b - B.id * numOfSets)) , count);
             }
             __syncthreads();
         }
@@ -335,8 +417,8 @@ __global__ void blockBasedHI(unsigned int numOfSets, const unsigned int* element
 
 }
 
-
-__global__ void intersectPathHI(unsigned int numOfSets, const unsigned int* elements, const unsigned int* offsets,
+template <bool selfJoin>
+__global__ void intersectPathHI(tile A, tile B, unsigned int numOfSets, const unsigned int* elements, const unsigned int* offsets,
                                 unsigned int* counts, unsigned int* bins, unsigned int numOfBuckets,
                                 unsigned int bucketSize, unsigned int* globalDiagonals)
 {
@@ -386,7 +468,9 @@ __global__ void intersectPathHI(unsigned int numOfSets, const unsigned int* elem
             }
 
             if (count > 0) {
-                atomicAdd(counts + triangular_idx(numOfSets, a, b), count);
+                atomicAdd(counts + (selfJoin ?
+                                    triangular_idx(numOfSets, a - A.id * numOfSets, b - B.id * numOfSets) :
+                                    quadratic_idx(numOfSets, a - A.id * numOfSets, b - B.id * numOfSets)) , count);
             }
             __syncthreads();
 
