@@ -7,12 +7,17 @@
 #include <thrust/execution_policy.h>
 #include <cxxopts.hpp>
 
-__global__ void intersectPath(unsigned int numOfSets, unsigned int* sets, unsigned int* offsets,
+template <bool selfJoin>
+__global__ void intersectPath(tile A, tile B, unsigned int numOfSets, unsigned int* sets, unsigned int* offsets,
                               unsigned int* globalDiagonals, unsigned int* counts);
 
 int main(int argc, char **argv) {
     try {
-        fmt::print("{}\n", "Intersect-Path GPU set intersection");
+        fmt::print(
+                "┌{0:─^{1}}┐\n"
+                "│{2: ^{1}}|\n"
+                "└{0:─^{1}}┘\n", "", 51, "Intersect-Path GPU set intersection"
+        );
 
         int multiprocessorCount;
         int maxThreadsPerBlock;
@@ -25,6 +30,7 @@ int main(int argc, char **argv) {
         std::string output;
         unsigned int blocks = multiprocessorCount * 16;
         unsigned int blockSize = maxThreadsPerBlock / 2;
+        unsigned int partition = 10000;
 
         cxxopts::Options options(argv[0], "Help");
 
@@ -33,6 +39,7 @@ int main(int argc, char **argv) {
                 ("output", "Output result path", cxxopts::value<std::string>(output))
                 ("blocks", "Number of blocks (default: " + std::to_string(blocks) + ")", cxxopts::value<unsigned int>(blocks))
                 ("threads", "Threads per block (default: " + std::to_string(blockSize) + ")", cxxopts::value<unsigned int>(blockSize))
+                ("partition", "Number of sets to be processed per GPU invocation", cxxopts::value<unsigned int>(partition))
                 ("help", "Print help");
 
         auto result = options.parse(argc, argv);
@@ -60,6 +67,46 @@ int main(int argc, char **argv) {
                 "Total elements", d->totalElements, ""
         );
 
+        std::vector<tile_pair> runs = findTilePairs(d->cardinality, partition);
+
+        size_t combinations;
+        if (runs.size() == 1) {
+            combinations = combination(d->cardinality, 2);
+        } else {
+            combinations = partition * partition;
+        }
+
+        unsigned long long outputMemory = runs.size() * combinations * sizeof(unsigned int);
+
+        unsigned long long deviceMemory = (sizeof(unsigned int) * 2 * (blocks + 1) * combinations)
+                + (sizeof(unsigned int) * d->cardinality * 2)
+                + (sizeof(unsigned int) * d->totalElements)
+                + (sizeof(unsigned int) * combinations);
+
+        fmt::print(
+                "┌{0:─^{1}}┐\n"
+                "│{3: ^{2}}|{4: ^{2}}│\n"
+                "│{5: ^{2}}|{6: ^{2}}│\n"
+                "│{7: ^{2}}|{8: ^{2}}│\n"
+                "│{9: ^{2}}|{10: ^{2}}│\n"
+                "│{11: ^{2}}|{12: ^{2}}│\n"
+                "│{13: ^{2}}|{14: ^{2}}│\n"
+                "│{15: ^{2}}|{16: ^{2}}│\n"
+                "│{17: ^{2}}|{18: ^{2}}│\n"
+                "└{19:─^{1}}┘\n", "Launch info", 51, 25,
+                "Blocks", blocks,
+                "Block Size", blockSize,
+                "Warps per Block", blockSize / 32,
+                "Level", "Block",
+                "Partition", partition,
+                "GPU invocations", runs.size(),
+                "Required memory (Output)", formatBytes(outputMemory),
+                "Required memory (GPU)", formatBytes(deviceMemory),
+                ""
+        );
+
+        std::vector<unsigned int> counts(runs.size() == 1 ? combinations : runs.size() * combinations);
+
         DeviceTimer deviceTimer;
 
         // allocate device memory space
@@ -73,10 +120,10 @@ int main(int argc, char **argv) {
         errorCheck(cudaMalloc((void**)&deviceOffsets, sizeof(unsigned int) * d->cardinality))
         errorCheck(cudaMalloc((void**)&deviceSizes, sizeof(unsigned int) * d->cardinality))
         errorCheck(cudaMalloc((void**)&deviceElements, sizeof(unsigned int) * d->totalElements))
-        errorCheck(cudaMalloc((void**)&deviceCounts, sizeof(unsigned int) * combination(d->cardinality, 2) + 1))
-        errorCheck(cudaMemset(deviceCounts, 0, sizeof(unsigned int) * combination(d->cardinality, 2) + 1))
-        errorCheck(cudaMalloc((void**)&deviceDiagonals, sizeof(unsigned int) * 2 * (blocks + 1) * (combination(d->cardinality, 2))))
-        errorCheck(cudaMemset(deviceDiagonals, 0, sizeof(unsigned int) * 2 * (blocks + 1) * (combination(d->cardinality, 2))))
+        errorCheck(cudaMalloc((void**)&deviceCounts, sizeof(unsigned int) * combinations + 1))
+        errorCheck(cudaMemset(deviceCounts, 0, sizeof(unsigned int) * combinations + 1))
+        errorCheck(cudaMalloc((void**)&deviceDiagonals, sizeof(unsigned int) * 2 * (blocks + 1) * combinations))
+        errorCheck(cudaMemset(deviceDiagonals, 0, sizeof(unsigned int) * 2 * (blocks + 1) * combinations))
         DeviceTimer::finish(devMemAlloc);
 
         EventPair *dataTransfer = deviceTimer.add("Transfer to device");
@@ -90,20 +137,44 @@ int main(int argc, char **argv) {
                                0); // in-place scan
         DeviceTimer::finish(setOffsets);
 
-        EventPair *findDiags = deviceTimer.add("Find diagonals");
-        findDiagonals<<<blocks, 32>>>(d->cardinality, deviceElements, deviceSizes, deviceOffsets, deviceDiagonals, deviceCounts);
-        DeviceTimer::finish(findDiags);
+        unsigned int iter = 0;
+        for (auto& run : runs) {
+            tile &A = run.first;
+            tile &B = run.second;
+            bool selfJoin = A.id == B.id;
+            unsigned int numOfSets = selfJoin && runs.size() == 1 ? d->cardinality : partition;
 
-        EventPair *computeIntersections = deviceTimer.add("Intersect path");
-        intersectPath<<<blocks, blockSize, blockSize * sizeof(unsigned int)>>>
-                (d->cardinality, deviceElements, deviceOffsets, deviceDiagonals, deviceCounts);
-        DeviceTimer::finish(computeIntersections);
+            EventPair *findDiags = deviceTimer.add("Find diagonals");
+            if (selfJoin) {
+                findDiagonals<true><<<blocks, 32>>>(A, B, numOfSets, deviceElements, deviceSizes,
+                                              deviceOffsets, deviceDiagonals, deviceCounts);
+            } else {
+                findDiagonals<false><<<blocks, 32>>>(A, B, numOfSets, deviceElements, deviceSizes,
+                                                    deviceOffsets, deviceDiagonals, deviceCounts);
+            }
+            DeviceTimer::finish(findDiags);
 
-        std::vector<unsigned int> counts(combination(d->cardinality, 2));
+            EventPair *computeIntersections = deviceTimer.add("Intersect path");
+            if (selfJoin) {
+                intersectPath<true><<<blocks, blockSize, blockSize * sizeof(unsigned int)>>>
+                        (A, B, numOfSets, deviceElements, deviceOffsets, deviceDiagonals, deviceCounts);
+            } else {
+                intersectPath<false><<<blocks, blockSize, blockSize * sizeof(unsigned int)>>>
+                        (A, B, numOfSets, deviceElements, deviceOffsets, deviceDiagonals, deviceCounts);
+            }
+            DeviceTimer::finish(computeIntersections);
 
-        EventPair *countTransfer = deviceTimer.add("Transfer result");
-        errorCheck(cudaMemcpy(&counts[0], deviceCounts, sizeof(unsigned int) * combination(d->cardinality, 2), cudaMemcpyDeviceToHost))
-        DeviceTimer::finish(countTransfer);
+            EventPair *countTransfer = deviceTimer.add("Transfer result");
+            errorCheck(cudaMemcpy(&counts[0] + (iter * combinations), deviceCounts, sizeof(unsigned int) * combinations,
+                                  cudaMemcpyDeviceToHost))
+            DeviceTimer::finish(countTransfer);
+
+            EventPair* clearMemory = deviceTimer.add("Clear memory");
+            errorCheck(cudaMemset(deviceDiagonals, 0, sizeof(unsigned int) * 2 * (blocks + 1) * combinations))
+            errorCheck(cudaMemset(deviceCounts, 0, sizeof(unsigned int) * combinations))
+            DeviceTimer::finish(clearMemory);
+            iter++;
+        }
 
         EventPair *freeDevMem = deviceTimer.add("Free device memory");
         errorCheck(cudaFree(deviceOffsets))
@@ -118,7 +189,11 @@ int main(int argc, char **argv) {
 
         if (!output.empty()) {
             fmt::print("Writing result to file {}\n", output);
-            writeResult(d->cardinality, counts, output);
+            if (runs.size() == 1) {
+                writeResult(d->cardinality, counts, output);
+            } else {
+                writeResult(runs, partition, counts, output);
+            }
             fmt::print("Finished\n");
         }
 
@@ -129,14 +204,18 @@ int main(int argc, char **argv) {
     return 0;
 }
 
-__global__ void intersectPath(unsigned int numOfSets, unsigned int* sets, unsigned int* offsets,
+template <bool selfJoin>
+__global__ void intersectPath(tile A, tile B, unsigned int numOfSets, unsigned int* sets, unsigned int* offsets,
                               unsigned int* globalDiagonals, unsigned int* counts) {
 
-    for (unsigned int a = 0; a < numOfSets - 1; a++) {
-        for (unsigned int b = a + 1; b < numOfSets; b++) { // iterate every combination
+    for (unsigned int a = A.start; a < A.end; a++) {
+        for (unsigned int b = (selfJoin ? a + 1 : B.start); b < B.end; b++) { // iterate every combination
+            unsigned int offset = (selfJoin ?
+                                   triangular_idx(numOfSets, a - A.id * numOfSets, b - B.id * numOfSets) :
+                                   quadratic_idx(numOfSets, a - A.id * numOfSets, b - B.id * numOfSets));
             unsigned int* aSet = sets + offsets[a];
             unsigned int* bSet = sets + offsets[b];
-            unsigned int* diagonals = globalDiagonals + (2 * (gridDim.x + 1)) * triangular_idx(numOfSets, a, b);
+            unsigned int* diagonals = globalDiagonals + (2 * (gridDim.x + 1)) * offset;
 
             unsigned int aStart = diagonals[blockIdx.x];
             unsigned int aEnd = diagonals[blockIdx.x + 1];
@@ -160,7 +239,7 @@ __global__ void intersectPath(unsigned int numOfSets, unsigned int* sets, unsign
                                                          diag - mp,
                                                          bSize,
                                                          vt);
-            atomicAdd(counts + triangular_idx(numOfSets, a, b), intersection);
+            atomicAdd(counts + offset, intersection);
         }
     }
 }
