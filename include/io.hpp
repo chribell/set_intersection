@@ -101,7 +101,7 @@ void writeResult(unsigned int k, std::vector<unsigned int> counts, std::string& 
     file.close();
 }
 
-template <typename T>
+template <typename T, bool mm = false>
 void writeResult(std::vector<tile_pair>& runs, unsigned int partition,
                  std::vector<T>& counts, std::string& output) {
     std::ofstream file;
@@ -119,7 +119,7 @@ void writeResult(std::vector<tile_pair>& runs, unsigned int partition,
         for (unsigned int i = A.start; i < A.end; ++i) {
             for (unsigned int j = (selfJoin ? i + 1 : B.start); j < B.end; ++j) {
                 unsigned long pairOffset;
-                if (selfJoin) {
+                if (selfJoin && !mm) {
                     pairOffset = triangular_index(partition, i - A.id * partition, j - B.id * partition);
                 } else {
                     pairOffset = quadratic_index(partition, i - A.id * partition, j - B.id * partition);

@@ -6,7 +6,6 @@
 #include <thrust/scan.h>
 #include "util.hpp"
 #include "host_timer.hpp"
-#include <fmt/ranges.h>
 #include <cublas_v2.h>
 
 void populateBinaryMatrix(float* input, Dataset* dataset, unsigned int start, unsigned int end);
@@ -17,7 +16,7 @@ int main(int argc, char** argv) {
         fmt::print(
                 "┌{0:─^{1}}┐\n"
                 "│{2: ^{1}}|\n"
-                "└{0:─^{1}}┘\n", "", 51, "Matrix multiplication GPU set intersection"
+                "└{0:─^{1}}┘\n", "", 51, "GPU Matrix multiplication set intersection"
         );
 
         int multiprocessorCount;
@@ -68,25 +67,15 @@ int main(int argc, char** argv) {
                 "Total elements", d->totalElements, ""
         );
 
+        d->universe++;
+        partition = std::min(d->cardinality, partition);
+
 
         d->offsets = new unsigned int[d->cardinality];
         // calculate offsets
         thrust::exclusive_scan(thrust::host, d->sizes, d->sizes + d->cardinality, d->offsets, 0);
 
-        std::vector<unsigned int> setsCDF(d->cardinality, 0);
-        thrust::inclusive_scan(thrust::host, d->sizes, d->sizes + d->cardinality, setsCDF.begin());
-
         std::vector<tile> tiles = splitToTiles(d->cardinality, partition);
-        std::vector<unsigned int> elementsPerTile;
-
-        elementsPerTile.push_back(setsCDF[std::min(partition, d->cardinality) - 1]);
-
-        for (unsigned int i = 1; i < tiles.size(); ++i) {
-            elementsPerTile.push_back(setsCDF[tiles[i].end - 1] - setsCDF[tiles[i].start - 1]);
-        }
-
-        unsigned int maxTileElements = *std::max_element(elementsPerTile.begin(), elementsPerTile.end());
-
         std::vector<tile_pair> runs = findTilePairs(d->cardinality, partition);
 
         size_t combinations = partition * partition;
@@ -204,7 +193,7 @@ int main(int argc, char** argv) {
 
         if (!output.empty()) {
             fmt::print("Writing result to file {}\n", output);
-            writeResult<float>(runs, partition, counts, output);
+            writeResult<float, true>(runs, partition, counts, output);
             fmt::print("Finished\n");
         }
     } catch (const cxxopts::OptionException& e) {
