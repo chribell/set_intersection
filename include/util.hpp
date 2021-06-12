@@ -21,9 +21,8 @@ struct tile {
 
 typedef std::pair<tile, tile> tile_pair;
 
-std::vector<tile_pair> findTilePairs(unsigned int cardinality, unsigned int partition)
+std::vector<tile> splitToTiles(unsigned int cardinality, unsigned int partition)
 {
-    std::vector<tile_pair> pairs;
     std::vector<tile> tiles;
 
     unsigned int numOfTiles = std::ceil((double) cardinality / (double) partition);
@@ -35,8 +34,16 @@ std::vector<tile_pair> findTilePairs(unsigned int cardinality, unsigned int part
         tiles.push_back(tile(i, start, end));
     }
 
-    for (unsigned int i = 0; i < numOfTiles; ++i) {
-        for (unsigned int j = i; j < numOfTiles; ++j) {
+    return tiles;
+}
+
+std::vector<tile_pair> findTilePairs(unsigned int cardinality, unsigned int partition)
+{
+    std::vector<tile_pair> pairs;
+    std::vector<tile> tiles = splitToTiles(cardinality, partition);
+
+    for (unsigned int i = 0; i < tiles.size(); ++i) {
+        for (unsigned int j = i; j < tiles.size(); ++j) {
             pairs.push_back(std::make_pair(tiles[i], tiles[j]));
         }
     }

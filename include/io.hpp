@@ -14,6 +14,7 @@ struct Dataset {
     unsigned long totalElements;
     unsigned int* sizes;
     unsigned int* elements;
+    unsigned int* offsets;
 
     ~Dataset() {
         delete[] sizes;
@@ -100,8 +101,9 @@ void writeResult(unsigned int k, std::vector<unsigned int> counts, std::string& 
     file.close();
 }
 
+template <typename T>
 void writeResult(std::vector<tile_pair>& runs, unsigned int partition,
-                 std::vector<unsigned int>& counts, std::string& output) {
+                 std::vector<T>& counts, std::string& output) {
     std::ofstream file;
     file.open(output.c_str());
 

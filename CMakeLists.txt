@@ -140,5 +140,16 @@ set_target_properties(
         CUDA_ARCHITECTURES ${SM_ARCH})
 target_compile_options(obs PRIVATE -m64 --expt-extended-lambda --expt-relaxed-constexpr)
 
+# Optimized binary search binary
+add_executable(mm src/matrix_multiplication.cu)
+target_link_libraries(mm PRIVATE cxxopts fmt::fmt -lcublas)
+target_include_directories(mm PRIVATE include)
+set_target_properties(
+        mm
+        PROPERTIES
+        CUDA_SEPARABLE_COMPILATION ON
+        CUDA_ARCHITECTURES ${SM_ARCH})
+target_compile_options(mm PRIVATE -m64 --expt-extended-lambda --expt-relaxed-constexpr)
+
 
 
