@@ -139,7 +139,9 @@ int main(int argc, char** argv) {
         for (unsigned int i = 0; i < tiles.size(); ++i) {
             tile& A = tiles[i];
 
+            Interval* binaryTileA = hostTimer.add("Create binary matrix");
             populateBinaryMatrix(hostInput, d, A.start, A.end);
+            HostTimer::finish(binaryTileA);
 
             EventPair* tileATransfer = deviceTimer.add("Transfer to device");
             errorCheck(cudaMemcpy(devInput, hostInput, d->universe * partition * sizeof(float), cudaMemcpyHostToDevice))
@@ -147,7 +149,9 @@ int main(int argc, char** argv) {
 
             for (unsigned int j = i; j < tiles.size(); ++j) {
                 tile& B = tiles[j];
+                Interval* binaryTileB = hostTimer.add("Create binary matrix");
                 populateBinaryTransposeMatrix(hostInvInput, d, partition, B.start, B.end);
+                HostTimer::finish(binaryTileB);
 
                 EventPair* tileBTransfer = deviceTimer.add("Transfer to device");
                 errorCheck(cudaMemcpy(devInvInput, hostInvInput, d->universe * partition * sizeof(float), cudaMemcpyHostToDevice))
