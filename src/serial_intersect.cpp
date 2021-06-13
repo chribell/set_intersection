@@ -2,6 +2,7 @@
 #include <cxxopts.hpp>
 #include "io.hpp"
 #include "host_timer.hpp"
+#include <omp.h>
 
 
 unsigned int serialIntersect(std::vector<unsigned int>& a, std::vector<unsigned int>& b);
@@ -13,12 +14,14 @@ int main(int argc, char** argv) {
 
         std::string input;
         std::string output;
+        unsigned int threads = 4;
 
         cxxopts::Options options(argv[0], "Help");
 
         options.add_options()
                 ("input", "Input dataset path", cxxopts::value<std::string>(input))
                 ("output", "Output result path", cxxopts::value<std::string>(output))
+                ("threads", "Number of threads", cxxopts::value<unsigned int>(threads))
                 ("help", "Print help");
 
         auto result = options.parse(argc, argv);
@@ -52,10 +55,23 @@ int main(int argc, char** argv) {
 
         std::vector<unsigned int> counts(combination(sets.size(), 2));
 
+        omp_set_num_threads(threads);
+
         Interval* setInter = hostTimer.add("std::set intersection");
-        for (unsigned int a = 0; a < d->cardinality - 1; a++) {
-            for (unsigned int b = a + 1; b < d->cardinality; b++) {
-                counts[triangular_index(d->cardinality, a, b)] = serialIntersect(sets[a], sets[b]);
+        #pragma omp parallel
+        {
+            int threadNumber = omp_get_thread_num();
+
+            // calculate thread bounds
+            unsigned int lower = d->cardinality * threadNumber / threads;
+            unsigned int upper = d->cardinality * (threadNumber + 1) / threads;
+
+            for (unsigned int a = lower; a < upper; a++) {
+                for (unsigned int b = a + 1; b < d->cardinality; b++) {
+                    counts[triangular_index(d->cardinality, a, b)] = serialIntersect(sets[a], sets[b]);
+                }
+
+
             }
         }
         HostTimer::finish(setInter);

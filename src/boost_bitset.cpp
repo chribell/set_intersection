@@ -3,6 +3,7 @@
 #include <boost/dynamic_bitset.hpp>
 #include "io.hpp"
 #include "host_timer.hpp"
+#include <omp.h>
 
 int main(int argc, char** argv) {
     try {
@@ -10,12 +11,14 @@ int main(int argc, char** argv) {
 
         std::string input;
         std::string output;
+        unsigned int threads = 4;
 
         cxxopts::Options options(argv[0], "Help");
 
         options.add_options()
                 ("input", "Input dataset path", cxxopts::value<std::string>(input))
                 ("output", "Output result path", cxxopts::value<std::string>(output))
+                ("threads", "Number of threads", cxxopts::value<unsigned int>(threads))
                 ("help", "Print help");
 
         auto result = options.parse(argc, argv);
@@ -43,27 +46,40 @@ int main(int argc, char** argv) {
                 "Total elements", d->totalElements, ""
         );
 
+        d->universe++;
+
         HostTimer hostTimer;
 
         std::vector<std::vector<unsigned int>> sets = datasetToCollection(d);
 
         std::vector<unsigned int> counts(combination(sets.size(), 2));
 
-        Interval* setInter = hostTimer.add("Boost bitset intersection");
-        for (unsigned int a = 0; a < d->cardinality - 1; a++) {
-            // create bitset of set a
-            boost::dynamic_bitset<> bitset(d->universe);
-            for (unsigned int i = 0; i < sets[a].size(); ++i) {
-                bitset.set(sets[a][i]);
-            }
+        omp_set_num_threads(threads);
 
-            // iterate every next set
-            for (unsigned int b = a + 1; b < d->cardinality; b++) {
-                unsigned int count = 0;
-                for (unsigned int i = 0; i < sets[b].size(); ++i) {
-                    if (bitset[sets[b][i]]) count++;
+        Interval* setInter = hostTimer.add("Boost bitset intersection");
+        #pragma omp parallel
+        {
+            int threadNumber = omp_get_thread_num();
+
+            // calculate thread bounds
+            unsigned int lower = d->cardinality * threadNumber / threads;
+            unsigned int upper = d->cardinality * (threadNumber + 1) / threads;
+
+            for (unsigned int a = lower; a < upper; a++) {
+                boost::dynamic_bitset<> bitset(d->universe);
+                // create bitset of set a
+                for (unsigned int i = 0; i < sets[a].size(); ++i) {
+                    bitset.set(sets[a][i]);
                 }
-                counts[triangular_index(d->cardinality, a, b)] = count;
+
+                // iterate every next set
+                for (unsigned int b = a + 1; b < d->cardinality; b++) {
+                    unsigned int count = 0;
+                    for (unsigned int i = 0; i < sets[b].size(); ++i) {
+                        if (bitset[sets[b][i]]) count++;
+                    }
+                    counts[triangular_index(d->cardinality, a, b)] = count;
+                }
             }
         }
         HostTimer::finish(setInter);

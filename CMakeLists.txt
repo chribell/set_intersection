@@ -50,6 +50,8 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(simdcompressionlib) #SIMDCompressionLib
 
+find_package(OpenMP)
+
 # Generate dataset binary
 add_executable(generate_dataset src/generate_dataset.cpp)
 target_include_directories(generate_dataset PRIVATE include ${zipf_SOURCE_DIR} ${progressbar_SOURCE_DIR}/include/progresscpp/)
@@ -67,24 +69,25 @@ target_link_libraries(bin2txt PRIVATE fmt::fmt)
 
 # Plain vector intersection binary
 add_executable(stdintersection src/std_set_intersection.cpp)
-target_link_libraries(stdintersection PRIVATE fmt::fmt cxxopts)
+target_link_libraries(stdintersection PRIVATE OpenMP::OpenMP_CXX fmt::fmt cxxopts)
 target_include_directories(stdintersection PRIVATE include)
 
 # Boost bitset binary
 add_executable(boost_bitset src/boost_bitset.cpp)
-target_link_libraries(boost_bitset PRIVATE fmt::fmt cxxopts)
+target_link_libraries(boost_bitset PRIVATE OpenMP::OpenMP_CXX fmt::fmt cxxopts)
 target_include_directories(boost_bitset PRIVATE include)
+target_compile_options(boost_bitset PRIVATE -fpic -mavx -std=c++11  -Weffc++ -pedantic -O3 -Wall -fopenmp -Wextra -Wsign-compare  -Wwrite-strings -Wpointer-arith -Winit-self  -Wno-sign-conversion)
 
 # Serial intersect binary
 add_executable(serial_intersect src/serial_intersect.cpp)
-target_link_libraries(serial_intersect PRIVATE fmt::fmt cxxopts)
+target_link_libraries(serial_intersect PRIVATE OpenMP::OpenMP_CXX fmt::fmt cxxopts)
 target_include_directories(serial_intersect PRIVATE include)
 
 # SIMD CPU intersect binary
 add_executable(simd src/simd.cpp ${simdcompressionlib_SOURCE_DIR}/src/intersection.cpp)
-target_link_libraries(simd PRIVATE fmt::fmt cxxopts)
+target_link_libraries(simd PRIVATE OpenMP::OpenMP_CXX fmt::fmt cxxopts)
 target_include_directories(simd PRIVATE include ${simdcompressionlib_SOURCE_DIR}/include)
-target_compile_options(simd PRIVATE -fpic -mavx -std=c++11  -Weffc++ -pedantic -O3 -Wall  -Wextra -Wsign-compare  -Wwrite-strings -Wpointer-arith -Winit-self  -Wno-sign-conversion)
+target_compile_options(simd PRIVATE -fpic -mavx -std=c++11  -Weffc++ -pedantic -O3 -Wall -fopenmp -Wextra -Wsign-compare  -Wwrite-strings -Wpointer-arith -Winit-self  -Wno-sign-conversion)
 
 # Bitmap-based naive binary
 add_executable(bitmap_naive src/bitmap_naive.cu)

@@ -9,6 +9,7 @@
 #include <chrono>
 #include <string>
 #include <fstream>
+#include <omp.h>
 
 int main(int argc, char** argv) {
     try {
@@ -16,12 +17,14 @@ int main(int argc, char** argv) {
 
         std::string input;
         std::string output;
+        unsigned int threads = 4;
 
         cxxopts::Options options(argv[0], "Help");
 
         options.add_options()
                 ("input", "Input dataset path", cxxopts::value<std::string>(input))
                 ("output", "Output result path", cxxopts::value<std::string>(output))
+                ("threads", "Number of threads", cxxopts::value<unsigned int>(threads))
                 ("help", "Print help");
 
         auto result = options.parse(argc, argv);
@@ -57,14 +60,25 @@ int main(int argc, char** argv) {
 
         std::vector<unsigned int> counts(combination(sets.size(), 2));
 
+        omp_set_num_threads(threads);
+
         Interval* setInter = hostTimer.add("std::set intersection");
-        for (unsigned int a = 0; a < d->cardinality - 1; a++) {
-            for (unsigned int b = a + 1; b < d->cardinality; b++) {
-                std::vector<unsigned int> v(std::min(sets[a].size(), sets[b].size()));
-                size_t intersize = inter(sets[a].data(), sets[a].size(), sets[b].data(), sets[b].size(), v.data());
-                v.resize(intersize);
-                v.shrink_to_fit();
-                counts[triangular_index(d->cardinality, a, b)] = v.size();
+        #pragma omp parallel
+        {
+            int threadNumber = omp_get_thread_num();
+
+            // calculate thread bounds
+            unsigned int lower = d->cardinality * threadNumber / threads;
+            unsigned int upper = d->cardinality * (threadNumber + 1) / threads;
+
+            for (unsigned int a = lower; a < upper; a++) {
+                for (unsigned int b = a + 1; b < d->cardinality; b++) {
+                    std::vector<unsigned int> v(std::min(sets[a].size(), sets[b].size()));
+                    size_t intersize = inter(sets[a].data(), sets[a].size(), sets[b].data(), sets[b].size(), v.data());
+                    v.resize(intersize);
+                    v.shrink_to_fit();
+                    counts[triangular_index(d->cardinality, a, b)] = v.size();
+                }
             }
         }
         HostTimer::finish(setInter);
