@@ -67,6 +67,11 @@ add_executable(bin2txt src/bin2txt.cpp)
 target_include_directories(bin2txt PRIVATE include)
 target_link_libraries(bin2txt PRIVATE fmt::fmt)
 
+# CDF dataset
+add_executable(degree_cdf src/degree_cdf.cpp)
+target_include_directories(degree_cdf PRIVATE include)
+target_link_libraries(degree_cdf PRIVATE fmt::fmt)
+
 # Plain vector intersection binary
 add_executable(stdintersection src/std_set_intersection.cpp)
 target_link_libraries(stdintersection PRIVATE OpenMP::OpenMP_CXX fmt::fmt cxxopts)
